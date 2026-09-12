@@ -1,0 +1,11 @@
+.env.example
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+gha-creds-*.json
+get_token.py
