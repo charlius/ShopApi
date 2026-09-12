@@ -4,6 +4,7 @@ from fastapi import Header, HTTPException, Request
 
 from src.application.inventory_service import InventoryService
 from src.application.oauth_service import OAuthService
+from src.application.order_service import OrderService
 from src.application.product_service import ProductService
 from src.core.config import get_settings
 from src.domain.models import ShopifyCredentials
@@ -48,6 +49,10 @@ def get_product_service(request: Request) -> ProductService:
 
 def get_inventory_service(request: Request) -> InventoryService:
     return InventoryService(get_shopify_client(request))
+
+
+def get_order_service(request: Request) -> OrderService:
+    return OrderService(get_shopify_client(request))
 
 
 def get_oauth_service(request: Request) -> OAuthService:
