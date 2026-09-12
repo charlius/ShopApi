@@ -1,0 +1,97 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    tags:
+      - "dev"
+      - "dev-*"
+      - "prod"
+      - "prod-*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-run-${{ startsWith(github.ref_name, 'prod') && 'production' || 'development' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    environment: ${{ startsWith(github.ref_name, 'prod') && 'production' || 'development' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag
+        shell: bash
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            dev|dev-*|prod|prod-*) ;;
+            *) echo "Unsupported deployment tag: ${GITHUB_REF_NAME}" >&2; exit 1 ;;
+          esac
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Artifact Registry authentication
+        shell: bash
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        shell: bash
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPOSITORY }}/shop-api
+          ENVIRONMENT_TAG: ${{ startsWith(github.ref_name, 'prod') && 'prod' || 'dev' }}
+        run: |
+          docker build \
+            --tag "${IMAGE}:${GITHUB_SHA}" \
+            --tag "${IMAGE}:${ENVIRONMENT_TAG}" \
+            .
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:${ENVIRONMENT_TAG}"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          region: ${{ vars.GCP_REGION }}
+          service: ${{ vars.CLOUD_RUN_SERVICE }}
+          image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPOSITORY }}/shop-api:${{ github.sha }}
+          env_vars: |-
+            APP_ENV=${{ startsWith(github.ref_name, 'prod') && 'production' || 'development' }}
+            SHOPIFY_API_VERSION=2026-07
+            SHOPIFY_MAX_RETRIES=4
+            SHOPIFY_RETRY_BASE_DELAY=0.5
+            SHOPIFY_RETRY_MAX_DELAY=10
+          secrets: |-
+            SHOPIFY_SHOP=${{ vars.SHOPIFY_SHOP_SECRET }}:latest
+            SHOPIFY_API_KEY=${{ vars.SHOPIFY_API_KEY_SECRET }}:latest
+            SHOPIFY_API_SECRET=${{ vars.SHOPIFY_API_SECRET_SECRET }}:latest
+          flags: >-
+            --cpu=1
+            --memory=512Mi
+            --min-instances=0
+            --max-instances=3
+            --concurrency=40
+            --timeout=900
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          echo "### Cloud Run deployment" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Environment: ${{ startsWith(github.ref_name, 'prod') && 'production' || 'development' }}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Tag: ${GITHUB_REF_NAME}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Revision image: ${{ github.sha }}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- URL: ${{ steps.deploy.outputs.url }}" >> "${GITHUB_STEP_SUMMARY}"
